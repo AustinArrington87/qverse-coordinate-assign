@@ -10,18 +10,45 @@ import json
 from datetime import datetime
 import os
 from pathlib import Path
+import logging
 
 from zones import zones, validate_category, validate_subcategory, get_zone_ranges
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 # Constants
-DATA_DIR = Path("data")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
 COORDINATES_FILE = DATA_DIR / "qverse_coordinates.json"
 VECTOR_CACHE_FILE = DATA_DIR / "vector_cache.json"
 
-# Ensure data directory exists
-DATA_DIR.mkdir(exist_ok=True)
+def ensure_data_directory():
+    """Ensure the data directory and required files exist."""
+    try:
+        # Create data directory if it doesn't exist
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Data directory verified: {DATA_DIR}")
+
+        # Initialize coordinates file if it doesn't exist
+        if not COORDINATES_FILE.exists():
+            COORDINATES_FILE.write_text("[]")
+            logger.info(f"Initialized coordinates file: {COORDINATES_FILE}")
+
+        # Initialize vector cache file if it doesn't exist
+        if not VECTOR_CACHE_FILE.exists():
+            VECTOR_CACHE_FILE.write_text("{}")
+            logger.info(f"Initialized vector cache file: {VECTOR_CACHE_FILE}")
+
+    except Exception as e:
+        logger.error(f"Error initializing data directory structure: {e}")
+        raise RuntimeError(f"Failed to initialize data directory: {e}")
+
+# Ensure data directory exists on startup
+ensure_data_directory()
 
 class VectorData(BaseModel):
     vector: List[float]
@@ -53,8 +80,9 @@ class VectorCache:
             if VECTOR_CACHE_FILE.exists():
                 with open(VECTOR_CACHE_FILE, 'r') as f:
                     self.vectors = json.load(f)
+            logger.info("Vector cache loaded successfully")
         except Exception as e:
-            print(f"Error loading vector cache: {e}")
+            logger.error(f"Error loading vector cache: {e}")
             self.vectors = {}
     
     def save_cache(self):
@@ -62,8 +90,9 @@ class VectorCache:
         try:
             with open(VECTOR_CACHE_FILE, 'w') as f:
                 json.dump(self.vectors, f)
+            logger.info("Vector cache saved successfully")
         except Exception as e:
-            print(f"Error saving vector cache: {e}")
+            logger.error(f"Error saving vector cache: {e}")
     
     def add_vector(self, category: str, vector: List[float]):
         """Add a vector to the cache for a specific category."""
@@ -85,8 +114,9 @@ def load_coordinate_history() -> List[Dict]:
         if COORDINATES_FILE.exists():
             with open(COORDINATES_FILE, 'r') as f:
                 return json.load(f)
+        logger.info("Coordinate history loaded successfully")
     except Exception as e:
-        print(f"Error loading coordinate history: {e}")
+        logger.error(f"Error loading coordinate history: {e}")
     return []
 
 def save_coordinate_history(history: List[Dict]):
@@ -94,8 +124,9 @@ def save_coordinate_history(history: List[Dict]):
     try:
         with open(COORDINATES_FILE, 'w') as f:
             json.dump(history, f, indent=2)
+        logger.info("Coordinate history saved successfully")
     except Exception as e:
-        print(f"Error saving coordinate history: {e}")
+        logger.error(f"Error saving coordinate history: {e}")
 
 def get_coordinate_range(
     category: str, 
@@ -103,6 +134,7 @@ def get_coordinate_range(
     sub_subcategory: Optional[str] = None,
     detail: Optional[str] = None
 ) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+    """Get the coordinate ranges for the specified category hierarchy."""
     if not validate_category(category):
         raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
     
@@ -181,7 +213,6 @@ def calculate_coordinates_with_nn(
             })
     
     # Calculate position based on weighted average of neighbors
-    # and ensure it's within the specified ranges
     scaler = MinMaxScaler()
     
     # Prepare coordinates array for scaling
@@ -202,8 +233,16 @@ def calculate_coordinates_with_nn(
     
     return (x, y, z), neighbors_info
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize necessary resources on startup."""
+    logger.info("Starting Q-verse Coordinate Service")
+    ensure_data_directory()
+    logger.info("Initialization complete")
+
 @app.post("/assign-coordinates", response_model=CoordinateResponse)
 async def assign_coordinates(data: VectorData):
+    """Assign 3D coordinates to the input vector data."""
     # Get coordinate ranges based on all category levels
     x_range, y_range, z_range = get_coordinate_range(
         data.category, 
@@ -277,6 +316,7 @@ async def assign_coordinates(data: VectorData):
 
 @app.get("/zones")
 async def get_zones():
+    """Get all available zones and their configurations."""
     return zones
 
 @app.get("/coordinate-history")
@@ -313,6 +353,25 @@ async def get_coordinate_history(
     
     return filtered_history
 
+@app.get("/status")
+async def get_status():
+    """Check the status of the service and its data files."""
+    try:
+        return {
+            "status": "healthy",
+            "data_directory": str(DATA_DIR),
+            "coordinates_file": {
+                "exists": COORDINATES_FILE.exists(),
+                "size": COORDINATES_FILE.stat().st_size if COORDINATES_FILE.exists() else 0
+            },
+            "vector_cache_file": {
+                "exists": VECTOR_CACHE_FILE.exists(),
+                "size": VECTOR_CACHE_FILE.stat().st_size if VECTOR_CACHE_FILE.exists() else 0
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error checking service status: {str(e)}")
+
 @app.delete("/coordinate-history")
 async def clear_coordinate_history():
     """Clear the coordinate history file and vector cache."""
@@ -321,6 +380,10 @@ async def clear_coordinate_history():
             COORDINATES_FILE.unlink()
         if VECTOR_CACHE_FILE.exists():
             VECTOR_CACHE_FILE.unlink()
+        
+        # Reinitialize empty files
+        ensure_data_directory()
+        
         return {"message": "Coordinate history and vector cache cleared successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
