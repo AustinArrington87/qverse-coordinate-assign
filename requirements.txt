@@ -1,0 +1,18 @@
+# API Framework
+fastapi==0.109.2
+uvicorn==0.27.1
+pydantic==2.6.1
+
+# Scientific Computing
+numpy==1.26.3
+scikit-learn==1.4.0
+
+# HTTP Client (for testing)
+httpx==0.26.0
+
+# Async Support
+asyncio==3.4.3
+
+# Optional but recommended
+python-multipart==0.0.6  # For handling form data
+email-validator==2.1.0   # For email validation in Pydantic
