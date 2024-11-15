@@ -1,5 +1,5 @@
 # python3.11 -m uvicorn app:app --host 127.0.0.1 --port 8001 --reload
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Dict, List, Tuple, Optional
 import numpy as np
@@ -11,44 +11,55 @@ from datetime import datetime
 import os
 from pathlib import Path
 import logging
+import shutil
 
-from zones import zones, validate_category, validate_subcategory, get_zone_ranges
+from zones import zones, validate_category, validate_subcategory, get_coordinate_range
+from embedding_utils import embedder
+from adaptive_zones import adaptive_zones_manager
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Q-verse Coordinate Service")
 
 # Constants
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 COORDINATES_FILE = DATA_DIR / "qverse_coordinates.json"
 VECTOR_CACHE_FILE = DATA_DIR / "vector_cache.json"
+UPLOAD_DIR = DATA_DIR / "uploads"
 
-def ensure_data_directory():
-    """Ensure the data directory and required files exist."""
+def ensure_directories():
+    """Ensure all required directories exist."""
     try:
-        # Create data directory if it doesn't exist
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Data directory verified: {DATA_DIR}")
+        for directory in [DATA_DIR, UPLOAD_DIR]:
+            directory.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Directory verified: {directory}")
 
-        # Initialize coordinates file if it doesn't exist
+        # Initialize files if they don't exist
         if not COORDINATES_FILE.exists():
             COORDINATES_FILE.write_text("[]")
             logger.info(f"Initialized coordinates file: {COORDINATES_FILE}")
 
-        # Initialize vector cache file if it doesn't exist
         if not VECTOR_CACHE_FILE.exists():
             VECTOR_CACHE_FILE.write_text("{}")
             logger.info(f"Initialized vector cache file: {VECTOR_CACHE_FILE}")
 
     except Exception as e:
-        logger.error(f"Error initializing data directory structure: {e}")
-        raise RuntimeError(f"Failed to initialize data directory: {e}")
+        logger.error(f"Error initializing directory structure: {e}")
+        raise RuntimeError(f"Failed to initialize directories: {e}")
 
-# Ensure data directory exists on startup
-ensure_data_directory()
+# Ensure directories exist on startup
+ensure_directories()
+
+class ContentRequest(BaseModel):
+    text: Optional[str] = None
+    category: str
+    subcategory: Optional[str] = None
+    sub_subcategory: Optional[str] = None
+    detail: Optional[str] = None
+    metadata: Optional[Dict] = None
 
 class VectorData(BaseModel):
     vector: List[float]
@@ -68,6 +79,8 @@ class CoordinateResponse(BaseModel):
     sub_subcategory: Optional[str]
     detail: Optional[str]
     nearest_neighbors: Optional[List[Dict]] = None
+    vector: List[float]
+    source_type: str
 
 class VectorCache:
     def __init__(self):
@@ -128,46 +141,12 @@ def save_coordinate_history(history: List[Dict]):
     except Exception as e:
         logger.error(f"Error saving coordinate history: {e}")
 
-def get_coordinate_range(
-    category: str, 
-    subcategory: Optional[str] = None,
-    sub_subcategory: Optional[str] = None,
-    detail: Optional[str] = None
-) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
-    """Get the coordinate ranges for the specified category hierarchy."""
-    if not validate_category(category):
-        raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
-    
-    zone = zones[category]
-    x_range = zone["x_range"]
-    y_range = zone["y_range"]
-    
-    if not subcategory:
-        return x_range, y_range, zone["z_range"]
-    
-    if not validate_subcategory(category, subcategory):
-        raise HTTPException(status_code=400, detail=f"Invalid subcategory: {subcategory}")
-    
-    subcat = zone["subcategories"][subcategory]
-    
-    if not sub_subcategory:
-        return x_range, y_range, subcat["z_subrange"]
-    
-    if sub_subcategory not in subcat["sub_subcategories"]:
-        raise HTTPException(status_code=400, detail=f"Invalid sub-subcategory: {sub_subcategory}")
-    
-    sub_subcat = subcat["sub_subcategories"][sub_subcategory]
-    
-    if isinstance(sub_subcat, tuple):
-        return x_range, y_range, sub_subcat
-    elif isinstance(sub_subcat, dict):
-        if not detail:
-            return x_range, y_range, sub_subcat["range"]
-        if detail not in sub_subcat["details"]:
-            raise HTTPException(status_code=400, detail=f"Invalid detail: {detail}")
-        return x_range, y_range, sub_subcat["details"][detail]
-    
-    raise HTTPException(status_code=500, detail="Invalid zone configuration")
+def normalize_vector(vector: np.ndarray) -> np.ndarray:
+    """Normalize vector to unit length."""
+    norm = np.linalg.norm(vector)
+    if norm > 0:
+        return vector / norm
+    return vector
 
 def calculate_coordinates_with_nn(
     vector: List[float],
@@ -177,147 +156,377 @@ def calculate_coordinates_with_nn(
     z_range: Tuple[int, int]
 ) -> Tuple[Tuple[float, float, float], Optional[List[Dict]]]:
     """Calculate coordinates using nearest neighbors when possible."""
-    vector_np = np.array(vector).reshape(1, -1)
+    try:
+        # Convert input vector to numpy array and normalize
+        vector_np = np.array(vector, dtype=np.float32)
+        vector_np = normalize_vector(vector_np)
+        
+        # Get existing vectors for this category
+        category_vectors = vector_cache.get_vectors(category)
+        
+        # Handle empty cache or insufficient samples
+        if len(category_vectors) < 5:
+            return simple_interpolation(vector_np, x_range, y_range, z_range), None
+        
+        # Convert and normalize category vectors
+        category_vectors = np.array([
+            normalize_vector(np.array(v, dtype=np.float32))
+            for v in category_vectors
+        ])
+        
+        # Ensure all vectors have the same dimension
+        min_dim = min(len(vector_np), min(len(v) for v in category_vectors))
+        vector_np = vector_np[:min_dim]
+        category_vectors = np.array([v[:min_dim] for v in category_vectors])
+        
+        # Initialize nearest neighbors
+        n_neighbors = min(5, len(category_vectors))
+        nn = NearestNeighbors(n_neighbors=n_neighbors)
+        nn.fit(category_vectors)
+        
+        # Find nearest neighbors
+        distances, indices = nn.kneighbors(vector_np.reshape(1, -1))
+        
+        # Load history to get neighbor details
+        history = load_coordinate_history()
+        neighbors_info = []
+        
+        for i, idx in enumerate(indices[0]):
+            if idx < len(history):
+                neighbor = history[idx]
+                neighbors_info.append({
+                    "distance": float(distances[0][i]),
+                    "coordinates": neighbor["coordinates"],
+                    "category": neighbor["input_data"]["category"],
+                    "subcategory": neighbor["input_data"].get("subcategory"),
+                    "metadata": neighbor["input_data"].get("metadata")
+                })
+        
+        if not neighbors_info:
+            return simple_interpolation(vector_np, x_range, y_range, z_range), None
+        
+        # Calculate weighted average coordinates
+        weights = 1 / (distances[0] + 1e-6)
+        weights = weights / weights.sum()
+        
+        coords = np.array([
+            [n["coordinates"]["x"], n["coordinates"]["y"], n["coordinates"]["z"]]
+            for n in neighbors_info
+        ])
+        
+        weighted_coords = np.average(coords, weights=weights, axis=0)
+        
+        # Ensure coordinates are within bounds
+        x = float(np.clip(weighted_coords[0], x_range[0], x_range[1]))
+        y = float(np.clip(weighted_coords[1], y_range[0], y_range[1]))
+        z = float(np.clip(weighted_coords[2], z_range[0], z_range[1]))
+        
+        return (x, y, z), neighbors_info
+
+    except Exception as e:
+        logger.error(f"Error in coordinate calculation: {e}", exc_info=True)
+        return simple_interpolation(
+            np.array(vector[:3] if len(vector) > 3 else vector),
+            x_range, y_range, z_range
+        ), None
+
+def simple_interpolation(
+    vector: np.ndarray,
+    x_range: Tuple[int, int],
+    y_range: Tuple[int, int],
+    z_range: Tuple[int, int]
+) -> Tuple[float, float, float]:
+    """Simple interpolation fallback for coordinate calculation."""
+    # Ensure vector is 1-dimensional
+    if len(vector.shape) > 1:
+        vector = vector.flatten()
     
-    # Get existing vectors for this category
-    category_vectors = vector_cache.get_vectors(category)
+    # Pad vector if needed
+    if len(vector) < 3:
+        vector = np.pad(vector, (0, 3 - len(vector)), mode='constant', constant_values=0.5)
     
-    if len(category_vectors) < 5:  # Not enough vectors for meaningful NN
-        # Fall back to simple interpolation
-        x = np.interp(vector_np[0, 0] if vector_np.shape[1] > 0 else 0.5, [0, 1], x_range)
-        y = np.interp(vector_np[0, 1] if vector_np.shape[1] > 1 else 0.5, [0, 1], y_range)
-        z = np.interp(vector_np[0, 2] if vector_np.shape[1] > 2 else 0.5, [0, 1], z_range)
-        return (x, y, z), None
+    x = float(np.interp(vector[0], [0, 1], x_range))
+    y = float(np.interp(vector[1], [0, 1], y_range))
+    z = float(np.interp(vector[2], [0, 1], z_range))
     
-    # Initialize nearest neighbors
-    n_neighbors = min(5, len(category_vectors))
-    nn = NearestNeighbors(n_neighbors=n_neighbors)
-    nn.fit(category_vectors)
-    
-    # Find nearest neighbors
-    distances, indices = nn.kneighbors(vector_np)
-    
-    # Load history to get neighbor details
-    history = load_coordinate_history()
-    neighbors_info = []
-    
-    for i, idx in enumerate(indices[0]):
-        if idx < len(history):
-            neighbor = history[idx]
-            neighbors_info.append({
-                "distance": float(distances[0][i]),
-                "coordinates": neighbor["coordinates"],
-                "category": neighbor["input_data"]["category"],
-                "subcategory": neighbor["input_data"].get("subcategory"),
-                "metadata": neighbor["input_data"].get("metadata")
-            })
-    
-    # Calculate position based on weighted average of neighbors
-    scaler = MinMaxScaler()
-    
-    # Prepare coordinates array for scaling
-    neighbor_coords = np.array([[n["coordinates"]["x"], n["coordinates"]["y"], n["coordinates"]["z"]] 
-                              for n in neighbors_info])
-    
-    # Calculate weights based on inverse distances
-    weights = 1 / (distances[0] + 1e-6)  # Add small epsilon to avoid division by zero
-    weights = weights / weights.sum()
-    
-    # Calculate weighted average
-    weighted_coords = np.average(neighbor_coords, weights=weights, axis=0)
-    
-    # Scale to range
-    x = np.clip(weighted_coords[0], x_range[0], x_range[1])
-    y = np.clip(weighted_coords[1], y_range[0], y_range[1])
-    z = np.clip(weighted_coords[2], z_range[0], z_range[1])
-    
-    return (x, y, z), neighbors_info
+    return (x, y, z)
+
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize necessary resources on startup."""
     logger.info("Starting Q-verse Coordinate Service")
-    ensure_data_directory()
+    ensure_directories()
     logger.info("Initialization complete")
+
+@app.post("/process-text", response_model=CoordinateResponse)
+async def process_text(request: ContentRequest):
+    """Process text content and assign coordinates."""
+    try:
+        # Extract embedding
+        vector = embedder.get_text_embedding(request.text)
+        
+        # Create vector data
+        vector_data = VectorData(
+            vector=vector,
+            category=request.category,
+            subcategory=request.subcategory,
+            sub_subcategory=request.sub_subcategory,
+            detail=request.detail,
+            metadata={
+                "content_type": "text",
+                "original_text": request.text,
+                **(request.metadata or {})
+            }
+        )
+
+        # Get coordinates
+        coordinates = await assign_coordinates(vector_data)
+        coordinates.source_type = "text"
+        return coordinates
+
+    except Exception as e:
+        logger.error(f"Error processing text: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/process-image", response_model=CoordinateResponse)
+async def process_image(
+    file: UploadFile = File(...),
+    category: str = Form(...),
+    subcategory: Optional[str] = Form(None),
+    sub_subcategory: Optional[str] = Form(None),
+    detail: Optional[str] = Form(None),
+    metadata: Optional[str] = Form(None)
+):
+    """Process image content and assign coordinates."""
+    temp_path = None
+    try:
+        # Save uploaded file
+        temp_path = UPLOAD_DIR / file.filename
+        with temp_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Extract embedding
+        vector = embedder.get_image_embedding(str(temp_path))
+        
+        # Handle metadata
+        base_metadata = {
+            "content_type": "image",
+            "original_filename": file.filename
+        }
+        
+        if metadata:
+            try:
+                metadata_dict = json.loads(metadata)
+                base_metadata.update(metadata_dict)
+            except (json.JSONDecodeError, TypeError):
+                base_metadata["raw_metadata"] = str(metadata)
+
+        # Create vector data
+        vector_data = VectorData(
+            vector=vector,
+            category=category,
+            subcategory=subcategory,
+            sub_subcategory=sub_subcategory,
+            detail=detail,
+            metadata=base_metadata
+        )
+
+        # Get coordinates
+        coordinates = await assign_coordinates(vector_data)
+        coordinates.source_type = "image"
+        return coordinates
+
+    except Exception as e:
+        logger.error(f"Error processing image: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary file: {e}")
+
+@app.post("/process-multimodal", response_model=CoordinateResponse)
+async def process_multimodal(
+    file: Optional[UploadFile] = File(None),
+    text: Optional[str] = Form(None),
+    category: str = Form(...),
+    subcategory: Optional[str] = Form(None),
+    sub_subcategory: Optional[str] = Form(None),
+    detail: Optional[str] = Form(None),
+    metadata: Optional[str] = Form(None)
+):
+    """Process both text and image content together."""
+    temp_path = None
+    try:
+        vectors = []
+        
+        # Process text if provided
+        if text:
+            text_vector = np.array(embedder.get_text_embedding(text))
+            vectors.append(text_vector)
+        
+        # Process image if provided
+        if file:
+            temp_path = UPLOAD_DIR / file.filename
+            with temp_path.open("wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            image_vector = np.array(embedder.get_image_embedding(str(temp_path)))
+            vectors.append(image_vector)
+        
+        if not vectors:
+            raise HTTPException(status_code=400, detail="Either text or image must be provided")
+        
+        # Ensure all vectors have same shape
+        min_dim = min(v.shape[0] for v in vectors)
+        vectors = [v[:min_dim] for v in vectors]
+        
+        # Combine vectors
+        combined_vector = np.mean(vectors, axis=0).tolist()
+
+        # Handle metadata
+        base_metadata = {
+            "content_type": "multimodal",
+            "has_text": bool(text),
+            "has_image": bool(file),
+            "original_filename": file.filename if file else None
+        }
+        
+        if metadata:
+            try:
+                metadata_dict = json.loads(metadata)
+                base_metadata.update(metadata_dict)
+            except (json.JSONDecodeError, TypeError):
+                base_metadata["raw_metadata"] = str(metadata)
+
+        # Create vector data
+        vector_data = VectorData(
+            vector=combined_vector,
+            category=category,
+            subcategory=subcategory,
+            sub_subcategory=sub_subcategory,
+            detail=detail,
+            metadata=base_metadata
+        )
+
+        # Get coordinates
+        coordinates = await assign_coordinates(vector_data)
+        coordinates.source_type = "multimodal"
+        return coordinates
+
+    except Exception as e:
+        logger.error(f"Error processing multimodal content: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary file: {e}")
 
 @app.post("/assign-coordinates", response_model=CoordinateResponse)
 async def assign_coordinates(data: VectorData):
-    """Assign 3D coordinates to the input vector data."""
-    # Get coordinate ranges based on all category levels
-    x_range, y_range, z_range = get_coordinate_range(
-        data.category, 
-        data.subcategory,
-        data.sub_subcategory,
-        data.detail
-    )
-    
-    # Calculate 3D coordinates from the vector using nearest neighbors
-    (x, y, z), neighbors = calculate_coordinates_with_nn(
-        data.vector,
-        data.category,
-        x_range,
-        y_range,
-        z_range
-    )
-    
-    # Get current timestamp
-    timestamp = time.time()
-    
-    # Create response object
-    response = CoordinateResponse(
-        x=x,
-        y=y,
-        z=z,
-        timestamp=timestamp,
-        category=data.category,
-        subcategory=data.subcategory,
-        sub_subcategory=data.sub_subcategory,
-        detail=data.detail,
-        nearest_neighbors=neighbors
-    )
-    
-    # Create complete record including input data and results
-    complete_record = {
-        "input_data": {
-            "vector": data.vector,
-            "category": data.category,
-            "subcategory": data.subcategory,
-            "sub_subcategory": data.sub_subcategory,
-            "detail": data.detail,
-            "metadata": data.metadata
-        },
-        "coordinates": {
-            "x": x,
-            "y": y,
-            "z": z
-        },
-        "temporal": {
-            "unix_timestamp": timestamp,
-            "datetime": datetime.fromtimestamp(timestamp).isoformat(),
-            "date": datetime.fromtimestamp(timestamp).date().isoformat(),
-            "time": datetime.fromtimestamp(timestamp).time().isoformat()
-        },
-        "nearest_neighbors": neighbors
-    }
-    
-    # Add vector to cache
-    vector_cache.add_vector(data.category, data.vector)
-    
-    # Load existing history
-    history = load_coordinate_history()
-    
-    # Append new record
-    history.append(complete_record)
-    
-    # Save updated history
-    save_coordinate_history(history)
-    
-    return response
+    """Assign coordinates and update adaptive zones."""
+    try:
+        # Update adaptive zones with the new vector
+        adaptive_zones_manager.add_vector(
+            category=data.category,
+            vector=data.vector
+        )
+        
+        # Get coordinate ranges - try adaptive zones first
+        stats = adaptive_zones_manager.get_category_stats(data.category)
+        
+        if stats.get("has_sufficient_samples"):
+            adaptive_zones = adaptive_zones_manager.get_adaptive_zones()
+            if "adaptive_ranges" in adaptive_zones.get(data.category, {}):
+                # TODO: Implement adaptive ranges logic
+                pass
+        
+        # Fall back to base zones
+        x_range, y_range, z_range = get_coordinate_range(
+            data.category, 
+            data.subcategory,
+            data.sub_subcategory,
+            data.detail
+        )
+        
+        # Calculate coordinates
+        (x, y, z), neighbors = calculate_coordinates_with_nn(
+            data.vector,
+            data.category,
+            x_range,
+            y_range,
+            z_range
+        )
+        
+        timestamp = time.time()
+        
+        # Create response
+        response = CoordinateResponse(
+            x=x,
+            y=y,
+            z=z,
+            timestamp=timestamp,
+            category=data.category,
+            subcategory=data.subcategory,
+            sub_subcategory=data.sub_subcategory,
+            detail=data.detail,
+            nearest_neighbors=neighbors,
+            vector=data.vector,
+            source_type="direct"  # Will be overridden by process endpoints
+        )
+        
+        # Save to history
+        complete_record = {
+            "input_data": data.dict(),
+            "coordinates": {
+                "x": x,
+                "y": y,
+                "z": z
+            },
+            "temporal": {
+                "unix_timestamp": timestamp,
+                "datetime": datetime.fromtimestamp(timestamp).isoformat(),
+                "date": datetime.fromtimestamp(timestamp).date().isoformat(),
+                "time": datetime.fromtimestamp(timestamp).time().isoformat()
+            },
+            "nearest_neighbors": neighbors
+        }
+        
+        # Add vector to cache
+        vector_cache.add_vector(data.category, data.vector)
+        
+        # Update history
+        history = load_coordinate_history()
+        history.append(complete_record)
+        save_coordinate_history(history)
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error assigning coordinates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/zones")
 async def get_zones():
     """Get all available zones and their configurations."""
     return zones
+
+@app.get("/adaptive-zones")
+async def get_adaptive_zones():
+    """Get current adaptive zones configuration."""
+    return adaptive_zones_manager.get_adaptive_zones()
+
+@app.get("/zone-stats/{category}")
+async def get_zone_stats(category: str):
+    """Get statistics for a specific zone category."""
+    stats = adaptive_zones_manager.get_category_stats(category)
+    if not stats:
+        raise HTTPException(status_code=404, detail=f"Category {category} not found")
+    return stats
 
 @app.get("/coordinate-history")
 async def get_coordinate_history(
@@ -355,9 +564,9 @@ async def get_coordinate_history(
 
 @app.get("/status")
 async def get_status():
-    """Check the status of the service and its data files."""
+    """Get service status including adaptive zones information."""
     try:
-        return {
+        base_status = {
             "status": "healthy",
             "data_directory": str(DATA_DIR),
             "coordinates_file": {
@@ -369,6 +578,19 @@ async def get_status():
                 "size": VECTOR_CACHE_FILE.stat().st_size if VECTOR_CACHE_FILE.exists() else 0
             }
         }
+        
+        # Add adaptive zones status
+        adaptive_status = {
+            "adaptive_zones": {
+                "last_update": adaptive_zones_manager.last_update,
+                "categories": {
+                    category: adaptive_zones_manager.get_category_stats(category)
+                    for category in zones.keys()
+                }
+            }
+        }
+        
+        return {**base_status, **adaptive_status}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error checking service status: {str(e)}")
 
@@ -382,11 +604,15 @@ async def clear_coordinate_history():
             VECTOR_CACHE_FILE.unlink()
         
         # Reinitialize empty files
-        ensure_data_directory()
+        ensure_directories()
         
         return {"message": "Coordinate history and vector cache cleared successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8001, reload=True)
 
 #### DOCUMENTATION - USER GUIDE ##############
 # Core Functionality:
