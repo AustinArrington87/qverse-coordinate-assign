@@ -1,5 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Tuple, Optional, Any
 
+# Define zones configuration
 zones: Dict[str, Any] = {
     "arts_entertainment": {
         "x_range": (0, 50), 
@@ -158,14 +159,54 @@ zones: Dict[str, Any] = {
     }
 }
 
-# Helper functions for zone operations
 def validate_category(category: str) -> bool:
+    """Validate if category exists in zones."""
     return category in zones
 
 def validate_subcategory(category: str, subcategory: str) -> bool:
+    """Validate if subcategory exists in given category."""
     return category in zones and subcategory in zones[category]["subcategories"]
 
-def get_zone_ranges(category: str):
+def get_coordinate_range(
+    category: str, 
+    subcategory: Optional[str] = None,
+    sub_subcategory: Optional[str] = None,
+    detail: Optional[str] = None
+) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
+    """Get coordinate ranges for the specified category hierarchy."""
     if not validate_category(category):
         raise ValueError(f"Invalid category: {category}")
-    return zones[category]["x_range"], zones[category]["y_range"], zones[category]["z_range"]
+    
+    zone = zones[category]
+    x_range = zone["x_range"]
+    y_range = zone["y_range"]
+    
+    if not subcategory:
+        return x_range, y_range, zone["z_range"]
+    
+    if not validate_subcategory(category, subcategory):
+        raise ValueError(f"Invalid subcategory: {subcategory}")
+    
+    subcat = zone["subcategories"][subcategory]
+    
+    if not sub_subcategory:
+        return x_range, y_range, subcat["z_subrange"]
+    
+    if sub_subcategory not in subcat["sub_subcategories"]:
+        raise ValueError(f"Invalid sub-subcategory: {sub_subcategory}")
+    
+    sub_subcat = subcat["sub_subcategories"][sub_subcategory]
+    
+    if isinstance(sub_subcat, tuple):
+        return x_range, y_range, sub_subcat
+    elif isinstance(sub_subcat, dict):
+        if not detail:
+            return x_range, y_range, sub_subcat["range"]
+        if detail not in sub_subcat["details"]:
+            raise ValueError(f"Invalid detail: {detail}")
+        return x_range, y_range, sub_subcat["details"][detail]
+    
+    raise ValueError("Invalid zone configuration")
+
+# Export necessary components
+__all__ = ['zones', 'validate_category', 'validate_subcategory', 'get_coordinate_range']
