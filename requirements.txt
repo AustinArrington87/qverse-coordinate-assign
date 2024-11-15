@@ -1,18 +1,42 @@
-# API Framework
+# FastAPI and Server
 fastapi==0.109.2
 uvicorn==0.27.1
+python-multipart==0.0.6
 pydantic==2.6.1
 
-# Scientific Computing
+# Data Processing and ML
 numpy==1.26.3
 scikit-learn==1.4.0
+torch==2.1.2
+transformers==4.37.2
+sentence-transformers==2.2.2
+
+# Image Processing
+Pillow==10.2.0
 
 # HTTP Client (for testing)
 httpx==0.26.0
 
+# File Handling and Utilities
+python-magic==0.4.27  # for file type detection
+aiofiles==23.2.1     # for async file operations
+
 # Async Support
 asyncio==3.4.3
 
-# Optional but recommended
-python-multipart==0.0.6  # For handling form data
-email-validator==2.1.0   # For email validation in Pydantic
+# Data Validation
+email-validator==2.1.0
+
+# Optional but recommended for production
+gunicorn==21.2.0     # WSGI HTTP Server
+python-jose==3.3.0   # for JWT token handling
+passlib==1.7.4       # for password hashing
+bcrypt==4.1.2        # for password hashing
+python-dotenv==1.0.0 # for environment variables
+
+# Development and Testing
+pytest==7.4.4
+pytest-asyncio==0.23.5
+black==24.1.1        # code formatting
+flake8==7.0.0        # code linting
+mypy==1.8.0          # type checking
