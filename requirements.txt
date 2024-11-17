@@ -11,6 +11,11 @@ torch==2.1.2
 transformers==4.37.2
 sentence-transformers==2.2.2
 
+# Visualization and Analysis
+matplotlib==3.9.2
+seaborn==0.13.2
+pandas==2.2.2
+
 # Image Processing
 Pillow==10.2.0
 
