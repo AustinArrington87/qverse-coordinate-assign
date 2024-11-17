@@ -426,6 +426,37 @@ async def process_multimodal(
             except Exception as e:
                 logger.error(f"Error cleaning up temporary file: {e}")
 
+@app.post("/predict-zone")
+async def predict_zone(vector_data: List[float]):
+    """Predict the most appropriate zone for a vector."""
+    try:
+        predicted_zone, confidence = adaptive_zones_manager.predict_zone(vector_data)
+        return {
+            "predicted_zone": predicted_zone,
+            "confidence": confidence,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error predicting zone: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/zone-learning-status")
+async def get_zone_learning_status():
+    """Get the current status of zone learning."""
+    try:
+        status = {}
+        for zone in adaptive_zones_manager.vectors.keys():
+            status[zone] = {
+                "vector_count": len(adaptive_zones_manager.vectors[zone]),
+                "has_centroid": zone in adaptive_zones_manager.zone_centroids,
+                "clusters": len(adaptive_zones_manager.clusters.get(zone, {})),
+                "learning_complete": len(adaptive_zones_manager.vectors[zone]) >= adaptive_zones_manager.min_samples
+            }
+        return status
+    except Exception as e:
+        logger.error(f"Error getting zone learning status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/assign-coordinates", response_model=CoordinateResponse)
 async def assign_coordinates(data: VectorData):
     """Assign coordinates and update adaptive zones."""
