@@ -1,20 +1,288 @@
 from typing import Dict, Tuple, Optional, Any
 
-# Define zones configuration
 zones: Dict[str, Any] = {
     "arts_entertainment": {
-        "x_range": (0, 50), 
-        "y_range": (0, 50), 
+        "x_range": (0, 50),
+        "y_range": (0, 50),
         "z_range": (0, 50),
         "subcategories": {
-            "visual_arts": {"z_subrange": (0, 16)},
-            "music": {"z_subrange": (17, 33)},
-            "film_tv": {"z_subrange": (34, 50)}
+            "visual_arts": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "painting": (0, 5),
+                    "sculpture": (6, 10),
+                    "photography": (11, 16)
+                }
+            },
+            "music": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "classical": (17, 22),
+                    "popular": (23, 28),
+                    "jazz": (29, 33)
+                }
+            },
+            "film_tv": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "movies": (34, 39),
+                    "television": (40, 45),
+                    "streaming": (46, 50)
+                }
+            }
+        }
+    },
+    "business_finance": {
+        "x_range": (51, 100),
+        "y_range": (0, 50),
+        "z_range": (0, 50),
+        "subcategories": {
+            "ecommerce": {
+                "z_subrange": (0, 12),
+                "sub_subcategories": {
+                    "retail": {
+                        "range": (0, 4),
+                        "details": {"b2c": (0, 4)}
+                    },
+                    "wholesale": {
+                        "range": (5, 8),
+                        "details": {"b2b": (5, 8)}
+                    },
+                    "marketplace": (9, 12)
+                }
+            },
+            "banking": {
+                "z_subrange": (13, 25),
+                "sub_subcategories": {
+                    "commercial": (13, 16),
+                    "investment": (17, 21),
+                    "retail": (22, 25)
+                }
+            },
+            "investment": {
+                "z_subrange": (26, 33),
+                "sub_subcategories": {
+                    "stocks": (26, 28),
+                    "bonds": (29, 31),
+                    "crypto": (32, 33)
+                }
+            },
+            "insurance": {
+                "z_subrange": (34, 42),
+                "sub_subcategories": {
+                    "life": (34, 36),
+                    "health": (37, 39),
+                    "property": (40, 42)
+                }
+            },
+            "real_estate": {
+                "z_subrange": (43, 50),
+                "sub_subcategories": {
+                    "residential": (43, 45),
+                    "commercial": (46, 48),
+                    "industrial": (49, 50)
+                }
+            }
+        }
+    },
+    "communications": {
+        "x_range": (101, 150),
+        "y_range": (0, 50),
+        "z_range": (0, 50),
+        "subcategories": {
+            "telecom": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "mobile": (0, 5),
+                    "internet": (6, 11),
+                    "infrastructure": (12, 16)
+                }
+            },
+            "marketing": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "digital": (17, 22),
+                    "traditional": (23, 28),
+                    "social_media": (29, 33)
+                }
+            }
+        }
+    },
+    "construction": {
+        "x_range": (151, 200),
+        "y_range": (0, 50),
+        "z_range": (0, 50),
+        "subcategories": {
+            "residential": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "houses": (0, 8),
+                    "apartments": (9, 16)
+                }
+            },
+            "commercial": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "offices": (17, 25),
+                    "retail": (26, 33)
+                }
+            },
+            "industrial": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "factories": (34, 42),
+                    "warehouses": (43, 50)
+                }
+            }
+        }
+    },
+    "energy": {
+        "x_range": (0, 50),
+        "y_range": (51, 100),
+        "z_range": (0, 50),
+        "subcategories": {
+            "renewable": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "solar": (0, 5),
+                    "wind": (6, 11),
+                    "hydro": (12, 16)
+                }
+            },
+            "fossil_fuels": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "oil": (17, 22),
+                    "gas": (23, 28),
+                    "coal": (29, 33)
+                }
+            },
+            "nuclear": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "fission": (34, 42),
+                    "research": (43, 50)
+                }
+            }
+        }
+    },
+    "fashion_retail": {
+        "x_range": (51, 100),
+        "y_range": (51, 100),
+        "z_range": (0, 50),
+        "subcategories": {
+            "apparel": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "luxury": (0, 8),
+                    "casual": (9, 16)
+                }
+            },
+            "accessories": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "jewelry": (17, 25),
+                    "bags": (26, 33)
+                }
+            },
+            "footwear": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "casual": (34, 42),
+                    "athletic": (43, 50)
+                }
+            }
+        }
+    },
+    "food_beverage": {
+        "x_range": (101, 150),
+        "y_range": (51, 100),
+        "z_range": (0, 50),
+        "subcategories": {
+            "restaurants": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "fine_dining": (0, 5),
+                    "fast_food": (6, 11),
+                    "casual_dining": (12, 16)
+                }
+            },
+            "agriculture": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "farming": (17, 25),
+                    "livestock": (26, 33)
+                }
+            },
+            "processing": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "packaged_foods": (34, 42),
+                    "beverages": (43, 50)
+                }
+            }
+        }
+    },
+    "health_wellness": {
+        "x_range": (151, 200),
+        "y_range": (51, 100),
+        "z_range": (0, 50),
+        "subcategories": {
+            "medical": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "hospitals": (0, 5),
+                    "clinics": (6, 11),
+                    "research": (12, 16)
+                }
+            },
+            "fitness": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "gyms": (17, 25),
+                    "equipment": (26, 33)
+                }
+            },
+            "mental_health": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "therapy": (34, 42),
+                    "counseling": (43, 50)
+                }
+            }
+        }
+    },
+    "manufacturing": {
+        "x_range": (0, 50),
+        "y_range": (101, 150),
+        "z_range": (0, 50),
+        "subcategories": {
+            "automotive": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "vehicles": (0, 8),
+                    "parts": (9, 16)
+                }
+            },
+            "electronics": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "consumer": (17, 25),
+                    "industrial": (26, 33)
+                }
+            },
+            "machinery": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "industrial": (34, 42),
+                    "agricultural": (43, 50)
+                }
+            }
         }
     },
     "science_nature": {
-        "x_range": (0, 50), 
-        "y_range": (101, 150), 
+        "x_range": (51, 100),
+        "y_range": (101, 150),
         "z_range": (0, 50),
         "subcategories": {
             "physics": {
@@ -34,42 +302,42 @@ zones: Dict[str, Any] = {
                 }
             },
             "biology": {
-                "z_subrange": (17, 24),
+                "z_subrange": (17, 25),
                 "sub_subcategories": {
                     "molecular": (17, 19),
                     "genetics": (20, 22),
-                    "ecology": (23, 24)
+                    "ecology": (23, 25)
                 }
             },
             "astronomy": {
-                "z_subrange": (25, 32),
+                "z_subrange": (26, 33),
                 "sub_subcategories": {
-                    "cosmology": (25, 27),
-                    "planetary": (28, 30),
-                    "astrophysics": (31, 32)
+                    "cosmology": (26, 28),
+                    "planetary": (29, 31),
+                    "astrophysics": (32, 33)
                 }
             },
             "geology": {
-                "z_subrange": (33, 40),
+                "z_subrange": (34, 42),
                 "sub_subcategories": {
-                    "mineralogy": (33, 35),
-                    "tectonics": (36, 38),
-                    "paleontology": (39, 40)
+                    "mineralogy": (34, 36),
+                    "tectonics": (37, 39),
+                    "paleontology": (40, 42)
                 }
             },
             "environmental": {
-                "z_subrange": (41, 50),
+                "z_subrange": (43, 50),
                 "sub_subcategories": {
-                    "climate": (41, 44),
-                    "conservation": (45, 47),
-                    "sustainability": (48, 50)
+                    "climate": (43, 45),
+                    "conservation": (46, 48),
+                    "sustainability": (49, 50)
                 }
             }
         }
     },
     "sports_recreation": {
-        "x_range": (151, 200), 
-        "y_range": (51, 100), 
+        "x_range": (101, 150),
+        "y_range": (101, 150),
         "z_range": (0, 50),
         "subcategories": {
             "team_sports": {
@@ -128,13 +396,6 @@ zones: Dict[str, Any] = {
                             "freestyle": (27, 28),
                             "greco_roman": (29, 30)
                         }
-                    },
-                    "martial_arts": {
-                        "range": (31, 33),
-                        "details": {
-                            "karate": (31, 32),
-                            "judo": (32, 33)
-                        }
                     }
                 }
             },
@@ -145,14 +406,98 @@ zones: Dict[str, Any] = {
                     "golf": (37, 39),
                     "athletics": (40, 42)
                 }
+            }
+        }
+    },
+    "technology": {
+        "x_range": (151, 200),
+        "y_range": (101, 150),
+        "z_range": (0, 50),
+        "subcategories": {
+            "software": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "enterprise": (0, 5),
+                    "consumer": (6, 11),
+                    "mobile": (12, 16)
+                }
             },
-            "outdoor_activities": {
+            "hardware": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "computers": (17, 22),
+                    "mobile": (23, 28),
+                    "networking": (29, 33)
+                }
+            },
+            "ai_ml": {
+                "z_subrange": (34, 42),
+                "sub_subcategories": {
+                    "applications": (34, 38),
+                    "research": (39, 42)
+                }
+            },
+            "cloud": {
                 "z_subrange": (43, 50),
                 "sub_subcategories": {
-                    "hiking": (43, 44),
-                    "climbing": (45, 46),
-                    "cycling": (47, 48),
-                    "water_sports": (49, 50)
+                    "infrastructure": (43, 46),
+                    "services": (47, 50)
+                }
+            }
+        }
+    },
+    "tourism_hospitality": {
+        "x_range": (0, 50),
+        "y_range": (151, 200),
+        "z_range": (0, 50),
+        "subcategories": {
+            "hotels": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "luxury": (0, 8),
+                    "budget": (9, 16)
+                }
+            },
+            "travel": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "air": (17, 25),
+                    "cruise": (26, 33)
+                }
+            },
+            "attractions": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "theme_parks": (34, 42),
+                    "museums": (43, 50)
+                }
+            }
+        }
+    },
+    "transportation": {
+        "x_range": (51, 100),
+        "y_range": (151, 200),
+        "z_range": (0, 50),
+        "subcategories": {
+            "automotive": {
+                "z_subrange": (0, 16),
+                "sub_subcategories": {
+                    "personal": (0, 8),
+                    "commercial": (9, 16)
+                }
+            },
+            "aviation": {
+                "z_subrange": (17, 33),
+                "sub_subcategories": {
+                    "commercial": (17, 25),
+                    "private": (26, 33)
+                }
+            },
+            "shipping": {
+                "z_subrange": (34, 50),
+                "sub_subcategories": {
+                    "maritime": (34, 42),
+                    "logistics": (43, 50)
                 }
             }
         }
