@@ -6,6 +6,11 @@ from pathlib import Path
 import logging
 from datetime import datetime
 
+# Import zones and coordinate system
+from zones import zones, COORDINATE_SYSTEM
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class AdaptiveZones:
@@ -15,8 +20,13 @@ class AdaptiveZones:
         self.clusters: Dict[str, Dict] = {}
         self.min_samples = min_samples
         self.last_update = None
-        # Add centroids for each zone
         self.zone_centroids: Dict[str, np.ndarray] = {}
+        
+        # Define coordinate bounds from COORDINATE_SYSTEM
+        self.min_bound = COORDINATE_SYSTEM["min_bound"]
+        self.max_bound = COORDINATE_SYSTEM["max_bound"]
+        self.center = COORDINATE_SYSTEM["center"]
+        self.total_span = COORDINATE_SYSTEM["total_span"]
         
         # Load existing state
         self.load_state()
@@ -62,41 +72,17 @@ class AdaptiveZones:
                 logger.info("Adaptive zones state loaded successfully")
         except Exception as e:
             logger.error(f"Error loading adaptive zones state: {e}")
-
-    def predict_zone(self, vector: List[float]) -> Tuple[str, float]:
-        """Predict the most likely zone for a vector based on learned patterns."""
-        vector_np = np.array(vector, dtype=np.float32)
-        best_zone = None
-        best_similarity = -1
-        
-        # Compare with each zone's centroid
-        for zone, centroid in self.zone_centroids.items():
-            if centroid is not None:
-                similarity = self.calculate_similarity(vector_np, centroid)
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_zone = zone
-        
-        # If no prediction possible, use first zone as default
-        if best_zone is None and self.base_zones:
-            best_zone = next(iter(self.base_zones.keys()))
-            best_similarity = 0.0
-            
-        return best_zone, best_similarity
     
-    def calculate_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """Calculate cosine similarity between vectors."""
-        # Ensure same dimension
-        min_dim = min(len(vec1), len(vec2))
-        vec1, vec2 = vec1[:min_dim], vec2[:min_dim]
-        
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        if norm1 == 0 or norm2 == 0:
-            return 0
-            
-        return np.dot(vec1, vec2) / (norm1 * norm2)
-
+    def normalize_vector_space(self, vector: np.ndarray) -> np.ndarray:
+        """Normalize vector to the new coordinate space (501-1501)."""
+        normalized = (vector - self.min_bound) / self.total_span
+        return np.clip(normalized, 0, 1)
+    
+    def denormalize_vector_space(self, vector: np.ndarray) -> np.ndarray:
+        """Convert normalized vector back to coordinate space."""
+        denormalized = (vector * self.total_span) + self.min_bound
+        return np.clip(denormalized, self.min_bound, self.max_bound)
+    
     def normalize_vector_length(self, vectors: List[List[float]]) -> np.ndarray:
         """Normalize vectors to have the same length."""
         if not vectors:
@@ -110,15 +96,33 @@ class AdaptiveZones:
         
         return np.array(normalized_vectors, dtype=np.float32)
     
+    def calculate_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
+        """Calculate cosine similarity between vectors in normalized space."""
+        # Normalize vectors to same space before comparison
+        vec1_norm = self.normalize_vector_space(vec1)
+        vec2_norm = self.normalize_vector_space(vec2)
+        
+        # Ensure same dimensions
+        min_dim = min(len(vec1_norm), len(vec2_norm))
+        vec1_norm = vec1_norm[:min_dim]
+        vec2_norm = vec2_norm[:min_dim]
+        
+        norm1 = np.linalg.norm(vec1_norm)
+        norm2 = np.linalg.norm(vec2_norm)
+        if norm1 == 0 or norm2 == 0:
+            return 0
+            
+        return np.dot(vec1_norm, vec2_norm) / (norm1 * norm2)
+    
     def add_vector(self, category: str, vector: List[float], force_update: bool = False):
-        """Add a vector and update zone learning."""
+        """Add a vector and optionally update clusters."""
         try:
             if category not in self.vectors:
                 self.vectors[category] = []
             
             self.vectors[category].append(vector)
             
-            # Update clusters and centroids if enough samples
+            # Update clusters if we have enough samples or force update is requested
             if len(self.vectors[category]) >= self.min_samples or force_update:
                 self.update_clusters(categories=[category])
                 self.update_zone_centroids()
@@ -134,23 +138,18 @@ class AdaptiveZones:
             raise
     
     def update_clusters(self, categories: Optional[List[str]] = None):
-        """Update clusters for specified categories or all categories."""
+        """Update clusters for specified categories."""
         update_cats = categories or list(self.vectors.keys())
         
         for category in update_cats:
             try:
                 if category in self.vectors and len(self.vectors[category]) >= self.min_samples:
-                    # Normalize vector lengths
-                    vectors = self.normalize_vector_length(self.vectors[category])
+                    vectors = np.array(self.vectors[category], dtype=np.float32)
+                    vectors_norm = self.normalize_vector_space(vectors)
                     
-                    if len(vectors) == 0:
-                        continue
+                    clustering = DBSCAN(eps=0.3, min_samples=self.min_samples)
+                    clusters = clustering.fit(vectors_norm)
                     
-                    # Use DBSCAN for clustering
-                    clustering = DBSCAN(eps=0.5, min_samples=self.min_samples)
-                    clusters = clustering.fit(vectors)
-                    
-                    # Calculate cluster centers and ranges
                     unique_labels = set(clusters.labels_)
                     cluster_info = {}
                     
@@ -169,24 +168,44 @@ class AdaptiveZones:
                             }
                     
                     self.clusters[category] = cluster_info
+                    logger.info(f"Clusters updated for category {category}")
             except Exception as e:
                 logger.error(f"Error updating clusters for category {category}: {e}")
                 continue
         
         self.last_update = datetime.now().isoformat()
         logger.info(f"Clusters updated for categories: {update_cats}")
-
+    
     def update_zone_centroids(self):
         """Update centroids for each zone based on existing vectors."""
         for zone in self.vectors.keys():
             if len(self.vectors[zone]) > 0:
                 try:
-                    # Calculate zone centroid from all vectors in zone
                     vectors = self.normalize_vector_length(self.vectors[zone])
                     self.zone_centroids[zone] = np.mean(vectors, axis=0)
                     logger.info(f"Updated centroid for zone {zone} using {len(vectors)} vectors")
                 except Exception as e:
                     logger.error(f"Error updating centroid for zone {zone}: {e}")
+    
+    def predict_zone(self, vector: List[float]) -> Tuple[str, float]:
+        """Predict the most likely zone for a vector based on learned patterns."""
+        vector_np = np.array(vector, dtype=np.float32)
+        vector_norm = self.normalize_vector_space(vector_np)
+        best_zone = None
+        best_similarity = -1
+        
+        for zone, centroid in self.zone_centroids.items():
+            if centroid is not None:
+                similarity = self.calculate_similarity(vector_np, centroid)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_zone = zone
+        
+        if best_zone is None and self.base_zones:
+            best_zone = next(iter(self.base_zones.keys()))
+            best_similarity = 0.0
+            
+        return best_zone, best_similarity
     
     def get_adaptive_zones(self) -> Dict:
         """Generate adaptive zones based on clusters."""
@@ -195,7 +214,6 @@ class AdaptiveZones:
             
             for category, cluster_info in self.clusters.items():
                 if category in adaptive_zones:
-                    # Update zone ranges based on clusters
                     if cluster_info:  # Only update if we have clusters
                         cluster_ranges = [info["ranges"] for info in cluster_info.values()]
                         if cluster_ranges:
@@ -254,6 +272,8 @@ class AdaptiveZones:
             logger.error(f"Error getting learning metrics: {e}")
             return {}
 
-# Import zones and initialize manager
-from zones import zones
+# Initialize adaptive zones manager with base zones
 adaptive_zones_manager = AdaptiveZones(base_zones=zones)
+
+# Export necessary components
+__all__ = ['adaptive_zones_manager', 'AdaptiveZones']
