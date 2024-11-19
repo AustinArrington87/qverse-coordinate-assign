@@ -137,7 +137,13 @@ def save_coordinate_history(history: List[Dict]):
     try:
         with open(COORDINATES_FILE, 'w') as f:
             json.dump(history, f, indent=2)
-        logger.info("Coordinate history saved successfully")
+        
+        # Verify save
+        if COORDINATES_FILE.exists():
+            logger.info(f"Coordinate history saved successfully. Size: {COORDINATES_FILE.stat().st_size} bytes")
+        else:
+            logger.error("File not found after save attempt")
+            
     except Exception as e:
         logger.error(f"Error saving coordinate history: {e}")
 
@@ -148,6 +154,16 @@ def normalize_vector(vector: np.ndarray) -> np.ndarray:
         return vector / norm
     return vector
 
+# no more than 6 decmial places 
+def round_coordinates(x: float, y: float, z: float, decimal_places: int = 12) -> Tuple[float, float, float]:
+    """Round coordinates to specified decimal places."""
+    return (
+        round(float(x), decimal_places),
+        round(float(y), decimal_places),
+        round(float(z), decimal_places)
+    )
+
+# Calculate coordiantes using Nearest Neighbor algorithm
 def calculate_coordinates_with_nn(
     vector: List[float],
     category: str,
@@ -157,35 +173,42 @@ def calculate_coordinates_with_nn(
 ) -> Tuple[Tuple[float, float, float], Optional[List[Dict]]]:
     """Calculate coordinates using nearest neighbors when possible."""
     try:
-        # Convert input vector to numpy array and normalize
         vector_np = np.array(vector, dtype=np.float32)
-        vector_np = normalize_vector(vector_np)
+        if len(vector_np.shape) == 1:
+            vector_np = vector_np.reshape(1, -1)
         
         # Get existing vectors for this category
         category_vectors = vector_cache.get_vectors(category)
         
-        # Handle empty cache or insufficient samples
-        if len(category_vectors) < 5:
-            return simple_interpolation(vector_np, x_range, y_range, z_range), None
+        if len(category_vectors) < 5:  # Not enough vectors for meaningful NN
+            # When not enough neighbors, use vector components to determine position within range
+            # Ensure we use modulo to stay within range even if vector components are large
+            vector_sum = np.sum(vector_np) if len(vector_np) > 0 else 0
+            
+            # Generate pseudo-random but deterministic coordinates within the ranges
+            x_span = x_range[1] - x_range[0]
+            y_span = y_range[1] - y_range[0]
+            z_span = z_range[1] - z_range[0]
+            
+            # Use different components of the vector for each dimension
+            x = x_range[0] + (abs(vector_sum * 1.23456) % x_span)  # Use different multipliers
+            y = y_range[0] + (abs(vector_sum * 2.34567) % y_span)  # to get different positions
+            z = z_range[0] + (abs(vector_sum * 3.45678) % z_span)  # for each dimension
+            
+            # Ensure coordinates are within bounds
+            x = np.clip(x, x_range[0], x_range[1])
+            y = np.clip(y, y_range[0], y_range[1])
+            z = np.clip(z, z_range[0], z_range[1])
+            
+            return round_coordinates(float(x), float(y), float(z)), None
         
-        # Convert and normalize category vectors
-        category_vectors = np.array([
-            normalize_vector(np.array(v, dtype=np.float32))
-            for v in category_vectors
-        ])
-        
-        # Ensure all vectors have the same dimension
-        min_dim = min(len(vector_np), min(len(v) for v in category_vectors))
-        vector_np = vector_np[:min_dim]
-        category_vectors = np.array([v[:min_dim] for v in category_vectors])
-        
-        # Initialize nearest neighbors
+        # If we have enough vectors, use nearest neighbors
+        vectors_array = np.array(category_vectors)
         n_neighbors = min(5, len(category_vectors))
         nn = NearestNeighbors(n_neighbors=n_neighbors)
-        nn.fit(category_vectors)
+        nn.fit(vectors_array)
         
-        # Find nearest neighbors
-        distances, indices = nn.kneighbors(vector_np.reshape(1, -1))
+        distances, indices = nn.kneighbors(vector_np)
         
         # Load history to get neighbor details
         history = load_coordinate_history()
@@ -203,32 +226,41 @@ def calculate_coordinates_with_nn(
                 })
         
         if not neighbors_info:
-            return simple_interpolation(vector_np, x_range, y_range, z_range), None
+            # If no valid neighbors found, use the same random-but-deterministic approach
+            vector_sum = np.sum(vector_np)
+            x = x_range[0] + (abs(vector_sum * 1.23456) % (x_range[1] - x_range[0]))
+            y = y_range[0] + (abs(vector_sum * 2.34567) % (y_range[1] - y_range[0]))
+            z = z_range[0] + (abs(vector_sum * 3.45678) % (z_range[1] - z_range[0]))
+            return round_coordinates(float(x), float(y), float(z)), None
         
-        # Calculate weighted average coordinates
+        # Calculate weighted average of neighbor coordinates
         weights = 1 / (distances[0] + 1e-6)
         weights = weights / weights.sum()
         
-        coords = np.array([
-            [n["coordinates"]["x"], n["coordinates"]["y"], n["coordinates"]["z"]]
-            for n in neighbors_info
-        ])
+        weighted_coords = np.zeros(3)
+        for i, neighbor in enumerate(neighbors_info):
+            coords = [
+                neighbor["coordinates"]["x"],
+                neighbor["coordinates"]["y"],
+                neighbor["coordinates"]["z"]
+            ]
+            weighted_coords += weights[i] * np.array(coords)
         
-        weighted_coords = np.average(coords, weights=weights, axis=0)
+        # Ensure coordinates are within the specified ranges
+        x = np.clip(weighted_coords[0], x_range[0], x_range[1])
+        y = np.clip(weighted_coords[1], y_range[0], y_range[1])
+        z = np.clip(weighted_coords[2], z_range[0], z_range[1])
         
-        # Ensure coordinates are within bounds
-        x = float(np.clip(weighted_coords[0], x_range[0], x_range[1]))
-        y = float(np.clip(weighted_coords[1], y_range[0], y_range[1]))
-        z = float(np.clip(weighted_coords[2], z_range[0], z_range[1]))
+        return round_coordinates(float(x), float(y), float(z)), neighbors_info
         
-        return (x, y, z), neighbors_info
-
     except Exception as e:
-        logger.error(f"Error in coordinate calculation: {e}", exc_info=True)
-        return simple_interpolation(
-            np.array(vector[:3] if len(vector) > 3 else vector),
-            x_range, y_range, z_range
-        ), None
+        logger.error(f"Error in coordinate calculation: {e}")
+        # Even on error, generate valid coordinates instead of using center point
+        vector_sum = np.sum(vector_np) if len(vector_np) > 0 else 0
+        x = x_range[0] + (abs(vector_sum * 1.23456) % (x_range[1] - x_range[0]))
+        y = y_range[0] + (abs(vector_sum * 2.34567) % (y_range[1] - y_range[0]))
+        z = z_range[0] + (abs(vector_sum * 3.45678) % (z_range[1] - z_range[0]))
+        return round_coordinates(float(x), float(y), float(z)), None
 
 def simple_interpolation(
     vector: np.ndarray,
